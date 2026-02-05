@@ -1,5 +1,5 @@
 streamlit
- pandas 
- numpy 
- joblib
- os
+pandas 
+numpy 
+joblib
+os
