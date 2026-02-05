@@ -1,0 +1,175 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import os
+
+# --- 1. Load Model and Data --- #
+@st.cache_resource # Cache the model loading for performance
+def load_model_and_data():
+    model = joblib.load('random_forest_model.joblib')
+    X_train_columns = joblib.load('X_train_columns.joblib')
+    # Load the original DataFrame for reference values (means, max, unique categories)
+    df = pd.read_csv('consumer_behavior_dataset.csv')
+    return model, X_train_columns, df
+
+model, X_train_columns, df = load_model_and_data()
+
+# --- 2. Chatbot Prediction Function (Adapted for Streamlit) --- #
+def chatbot_predict(message):
+    msg = message.lower()
+
+    # Handle immediate non-predictive responses (politeness) FIRST
+    if any(word in msg for word in ["merci", "non, merci", "super", "bien", "ok", "cool"]):
+        return "C'est un plaisir ! N'hésitez pas si vous avez d'autres questions ou si vous souhaitez finaliser votre achat."
+    if any(word in msg for word in ["bonjour", "salut", "hello", "hi"]):
+        return "Bonjour ! 😊 Je suis votre assistant shopping personnel. Comment puis-je vous rendre service aujourd'hui ?"
+    if any(word in msg for word in ["au revoir", "bye", "a bientot", "bonne journée"]):
+        return "Au revoir et à bientôt ! N'oubliez pas nos offres exclusives. 😉"
+
+    # Handle Payment Methods Inquiry (informational, no prediction needed)
+    if any(word in msg for word in ["modes de paiement", "moyens de paiement", "comment payer"]):
+        return "Nous acceptons plusieurs modes de paiement sécurisés, y compris les cartes de crédit (Visa, MasterCard, Amex), PayPal, et le paiement à la livraison (COD) pour certaines régions. Lequel préférez-vous ?"
+
+    # Initialize input_df for prediction with all X_train_columns, set to 0
+    input_df = pd.DataFrame(0, index=[0], columns=X_train_columns)
+
+    # Set numerical columns to their means as a baseline
+    for col in ['price', 'discount_applied', 'pages_visited', 'time_spent', 'rating', 'sentiment_score', 'age']:
+        if col in input_df.columns:
+            input_df[col] = df[col].mean()
+
+    # Set boolean flags to 0 as a baseline
+    if 'add_to_cart' in input_df.columns: input_df['add_to_cart'] = 0
+    if 'abandoned_cart' in input_df.columns: input_df['abandoned_cart'] = 0
+
+    # Default intent to 'general' before specific detection
+    current_intent = 'general'
+
+    # --- Process user intents and adjust input_df for prediction --- #
+    if any(word in msg for word in ["panier", "ajouter", "prends", "commande", "acheter", "valider"]):
+        input_df['add_to_cart'] = 1
+        input_df['pages_visited'] = 15 
+        input_df['time_spent'] = 900 
+        input_df['sentiment_score'] = 0.9
+        current_intent = 'add_to_cart'
+    elif any(word in msg for word in ["abandonné", "oublié", "laissé", "mon panier"]):
+        input_df['abandoned_cart'] = 1
+        input_df['add_to_cart'] = 1 
+        input_df['pages_visited'] = 5 
+        input_df['sentiment_score'] = -0.3
+        current_intent = 'abandoned_cart'
+    elif any(word in msg for word in ["cher", "prix", "budget", "coûte", "onéreux"]):
+        input_df['price'] = df['price'].max() * 0.8 
+        input_df['sentiment_score'] = -0.5
+        current_intent = 'price_concern'
+    elif any(word in msg for word in ["réduction", "promo", "code", "remise", "soldes", "offre"]):
+        input_df['discount_applied'] = df['discount_applied'].max() * 1.5 
+        input_df['sentiment_score'] = 0.8
+        current_intent = 'discount_inquiry'
+    elif any(word in msg for word in ["avis", "qualité", "note", "fiable", "bon produit", "meilleur"]):
+        input_df['rating'] = 5 
+        input_df['sentiment_score'] = 0.7
+        current_intent = 'quality_inquiry'
+    elif any(word in msg for word in ["livraison", "où est ma commande", "expédié", "colis", "délai"]):
+        input_df['sentiment_score'] = 0.1 
+        input_df['add_to_cart'] = 0 
+        current_intent = 'shipping_inquiry'
+    elif any(word in msg for word in ["paiement", "facture", "erreur de paiement", "problème de paiement", "payer"]):
+        input_df['sentiment_score'] = -0.6 
+        input_df['abandoned_cart'] = 1 
+        input_df['add_to_cart'] = 1 
+        current_intent = 'payment_issue'
+    elif any(word in msg for word in ["retour", "remboursement", "échanger", "renvoyer"]):
+        input_df['sentiment_score'] = -0.4 
+        input_df['add_to_cart'] = 0 
+        current_intent = 'product_return'
+    elif any(word in msg for word in ["recommander", "similaire", "quel produit", "suggérer", "pour moi"]):
+        input_df['sentiment_score'] = 0.4 
+        input_df['add_to_cart'] = 0 
+        input_df['pages_visited'] = 10 
+        current_intent = 'recommendation'
+    elif any(word in msg for word in ["compte", "mot de passe", "profil", "identifiant", "connexion"]):
+        input_df['sentiment_score'] = 0.0 
+        current_intent = 'account_management'
+
+
+    # Make Prediction using the loaded model
+    prediction = model.predict(input_df)[0]
+
+    # --- Generate Response based on prediction and current_intent ---
+    if prediction == 1: # Model predicts PURCHASE
+        if current_intent == 'add_to_cart':
+            response = ("""Fantastique ! Vous êtes à un clic de votre nouvel achat ! ✨ Pour valider :
+                        1️⃣ Cliquez sur **'Procéder au Paiement'**.
+                        2️⃣ Vérifiez vos informations de livraison.
+                        3️⃣ Confirmez votre paiement sécurisé.
+                        Besoin d'aide pour n'importe quelle étape ?""")
+        elif current_intent == 'quality_inquiry':
+            response = "Excellente nouvelle ! Le modèle prédit que vous êtes très proche d'une décision d'achat. Nos retours clients sont excellents pour cet article. Prêt(e) à l'ajouter à votre collection ?"
+        elif current_intent == 'discount_inquiry':
+            response = "Effectivement, et avec les remises actuelles, c'est le moment idéal pour finaliser ! Votre intention d'achat est très élevée. On concrétise ?"
+        elif current_intent == 'recommendation':
+            response = "Super ! D'après votre intérêt, je suis sûr(e) que vous allez adorer. Je peux vous guider vers la page produit pour concrétiser cet achat si vous le souhaitez."
+        else: # Default for Purchase or other intents where purchase is predicted
+            response = ("""Quel enthousiasme ! Votre intention d'achat est palpable. ⭐
+                        Pour ne pas manquer ce produit très demandé, je vous invite à finaliser rapidement :
+                        1️⃣ Vérifiez votre panier.
+                        2️⃣ Validez vos options de livraison.
+                        3️⃣ Confirmez votre paiement.
+                        Je suis là pour vous assister ! """)
+
+    else: # Model predicts NO PURCHASE
+        if current_intent == 'price_concern':
+            response = ("Je comprends que le prix soit une considération. Pour alléger la dépense, nous vous proposons une **remise exclusive de 15%** sur ce produit ! Utilisez le code **SPECIAL15**. Qu'en pensez-vous ?")
+        elif current_intent == 'abandoned_cart':
+            response = ("Oh non ! Il semblerait que vous ayez laissé un trésor dans votre panier. Pour vous aider à le retrouver, je vous offre la **livraison gratuite** sur cet article avec le code **LIVFREE** ! C'est le moment de craquer, non ?")
+        elif current_intent == 'discount_inquiry':
+             response = ("Vous avez flairé la bonne affaire ! J'ai un code exclusif pour vous : **PROMO20** pour 20% de réduction sur une sélection d'articles. Ça vous tente ?")
+        elif current_intent == 'quality_inquiry':
+            response = ("Même si le modèle ne prédit pas un achat immédiat, je peux vous assurer de la qualité de nos produits. Pour vous rassurer, que diriez-vous d'une **garantie prolongée** ou d'une petite remise supplémentaire avec le code **GARANTIEPLUS** pour 10% ?")
+        elif current_intent == 'shipping_inquiry':
+            response = ("Je comprends votre préoccupation concernant la livraison. Pour vérifier l'état de votre commande ou les délais estimés, vous pouvez consulter la section 'Suivi de Commande' sur votre compte ou me donner votre numéro de commande.")
+        elif current_intent == 'payment_issue':
+            response = ("Un problème de paiement ? Ne vous inquiétez pas pas, cela arrive ! Je vous recommande de vérifier les détails de votre carte, d'essayer un autre mode de paiement, ou de contacter notre support technique qui pourra vous aider immédiatement.")
+        elif current_intent == 'product_return':
+            response = ("Vous souhaitez effectuer un retour ou un échange ? Notre politique de retour est simple : vous avez 30 jours pour changer d'avis. Pour initier le processus, rendez-vous dans la section 'Mes Commandes' de votre compte ou laissez-moi vous guider.")
+        elif current_intent == 'recommendation':
+            response = ("Je suis là pour vous aider à trouver votre bonheur ! Pour des recommandations personnalisées, pourriez-vous me dire quels sont vos goûts ou ce que vous recherchez spécifiquement ?")
+        elif current_intent == 'account_management':
+            response = ("Pour toute question relative à votre compte (mot de passe, profil, informations personnelles), je vous invite à visiter la section 'Mon Compte'. Vous y trouverez toutes les options nécessaires pour gérer vos informations.")
+        else: # Default for No Purchase
+            response = ("""Je perçois une certaine hésitation. 😊 Pas de souci, je suis là pour vous guider ! Pour vous aider à découvrir nos pépites, j'ai le plaisir de vous offrir **-10%** sur votre première commande avec le code **BIENVENUE10**.\n\n                        Souhaitez-vous explorer nos catégories phares ?""")
+
+    return response
+
+# --- 3. Streamlit App Layout --- #
+st.set_page_config(page_title="🛒 Assistant IA - Optimisation des Ventes", layout="centered")
+st.title("🛒 Assistant IA - Optimisation des Ventes")
+st.write("Interface interactive utilisant un modèle Random Forest pour prédire le comportement d'achat et assister les clients.")
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+    # Initial chatbot greeting
+    st.session_state.messages.append({"role": "assistant", "content": "Bonjour ! 😊 Je suis votre assistant shopping personnel. Comment puis-je vous rendre service aujourd'hui ?"})
+
+# Display chat messages from history on app rerun
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Accept user input
+if prompt := st.chat_input("Comment puis-je vous aider ?"):
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Display user message in chat message container
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Get assistant response
+    with st.chat_message("assistant"):
+        response = chatbot_predict(prompt)
+        st.markdown(response)
+    # Add assistant response to chat history
+    st.session_state.messages.append({"role": "assistant", "content": response})
